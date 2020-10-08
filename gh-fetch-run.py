@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 
 import argparse
-from github import Github
 from os import environ
+
 import requests
+from github import Github
 
 
 class Deployer:

@@ -1,0 +1,27 @@
+#!/bin/bash
+
+if [ $# -lt 1 ]; then 
+    echo usage: FILE [region] [group] [instance] [owner]
+    exit 1
+fi
+
+BRANCH=${1}
+ZIPFILE=/tmp/${2:-${BRANCH}}.zip
+REGION=${3:-eastus}
+GROUP=${4:-onefuzz-bmc}
+INSTANCE=${5:-onefuzz-bmc}
+OWNER=${6:-bcaswell}
+
+if [ ! -f ${FILE} ]; then 
+    echo no such file: ${FILE}
+    exit 1
+fi
+
+cd $(dirname "$(readlink -f "$0")")
+eval $(direnv export bash)
+
+set -ex
+./gh-fetch-run.py ${BRANCH} ${ZIPFILE}
+./d1 ${ZIPFILE} $REGION $GROUP $INSTANCE $OWNER
+./new-build.py
+$ONEFUZZ_SRC_ROOT/src/cli/examples/integration-test.py test $ONEFUZZ_SRC_ROOT/../built-samples/ --region eastus2
