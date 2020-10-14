@@ -6,7 +6,7 @@ if [ $# -lt 1 ]; then
 fi
 
 BRANCH=${1}
-ZIPFILE=${2:-${BRANCH}}
+ZIPFILE=/tmp/${2:-${BRANCH}}.zip
 REGION=${3:-eastus}
 GROUP=${4:-onefuzz-bmc}
 INSTANCE=${5:-onefuzz-bmc}
@@ -21,6 +21,6 @@ cd $(dirname "$(readlink -f "$0")")
 eval $(direnv export bash)
 
 set -ex
-
-./d1-pr ${BRANCH} ${ZIPFILE} ${REGION} ${GROUP} ${INSTANCE} ${OWNER}
-$ONEFUZZ_SRC_ROOT/src/cli/examples/integration-test.py test $ONEFUZZ_SRC_ROOT/../built-samples/ --region eastus2
+./gh-fetch-run.py ${BRANCH} ${ZIPFILE}
+./d1 ${ZIPFILE} ${REGION} $GROUP $INSTANCE $OWNER
+./new-build.py
