@@ -1,24 +1,84 @@
 #!/usr/bin/env python
 
 import argparse
+import sys
 import subprocess
 import tempfile
-from os import environ
 import os
+import time
+import uuid
+from typing import Optional, Callable, Tuple, TypeVar
 
 import requests
 from github import Github
 
 
+A = TypeVar("A")
+
+
+def wait(func: Callable[[], Tuple[bool, str, A]], frequency: float = 1.0) -> A:
+    """
+    Wait until the provided func returns True
+
+    Provides user feedback via a spinner if stdout is a TTY.
+    """
+
+    isatty = sys.stdout.isatty()
+    frames = ["-", "\\", "|", "/"]
+    waited = False
+    last_message = None
+    result = None
+
+    try:
+        while True:
+            result = func()
+            if result[0]:
+                break
+            message = result[1]
+
+            if isatty:
+                if last_message:
+                    if last_message == message:
+                        sys.stdout.write("\b" * (len(last_message) + 2))
+                    else:
+                        sys.stdout.write("\n")
+                sys.stdout.write("%s %s" % (frames[0], message))
+                sys.stdout.flush()
+            elif last_message != message:
+                print(message, flush=True)
+
+            last_message = message
+            waited = True
+            time.sleep(frequency)
+            frames.sort(key=frames[0].__eq__)
+    finally:
+        if waited and isatty:
+            print(flush=True)
+
+    return result[2]
+
+
 class Downloader:
     def __init__(self):
-        self.gh = Github(login_or_token=environ["GITHUB_ISSUE_TOKEN"])
+        self.gh = Github(login_or_token=os.environ["GITHUB_ISSUE_TOKEN"])
 
     def get_artifact(
-        self, repo: str, workflow: str, branch: str, name: str, filename: str
+        self,
+        repo_name: str,
+        workflow: str,
+        branch: Optional[str],
+        pr: Optional[int],
+        name: str,
+        filename: str,
     ) -> None:
         print(f"getting {name}")
-        zip_file_url = self.get_artifact_url(repo, workflow, branch, name)
+
+        if pr:
+            branch = self.gh.get_repo(repo_name).get_pull(pr).head.ref
+        if not branch:
+            raise Exception("missing branch")
+
+        zip_file_url = self.get_artifact_url(repo_name, workflow, branch, name)
 
         (code, resp, _) = self.gh._Github__requester.requestBlob(
             "GET", zip_file_url, {}
@@ -37,18 +97,28 @@ class Downloader:
     ) -> str:
         repo = self.gh.get_repo(repo_name)
         workflow = repo.get_workflow(workflow_name)
+        run = workflow.get_runs(branch=branch)[0]
 
-        for run in workflow.get_runs(branch=branch, status="completed"):
-            response = requests.get(run.artifacts_url).json()
-            for artifact in response["artifacts"]:
-                if artifact["name"] == name:
-                    return artifact["archive_download_url"]
+        def check():
+            run.update()
+            return run.status == "completed", run.status, None
+
+        wait(check, frequency=10.0)
+
+        if run.conclusion != "success":
+            raise Exception("bad conclusion: %s" % run.conclusionq)
+
+        response = requests.get(run.artifacts_url).json()
+        for artifact in response["artifacts"]:
+            if artifact["name"] == name:
+                return artifact["archive_download_url"]
         raise Exception(f"no archive url for {branch} - {name}")
 
 
 class Deployer:
-    def __init__(self, *, branch: str, instance: str, region: str):
+    def __init__(self, *, pr: int, branch: str, instance: str, region: str):
         self.downloader = Downloader()
+        self.pr = pr
         self.branch = branch
         self.instance = instance
         self.region = region
@@ -58,11 +128,11 @@ class Deployer:
 
         venv = "deploy-venv"
         commands = [
-            f"unzip {filename}",
+            f"unzip -q {filename}",
             "unzip onefuzz-deployment*.zip",
             f"python -mvenv {venv}",
-            f"./{venv}/bin/pip install wheel",
-            f"./{venv}/bin/pip install -r requirements.txt",
+            f"./{venv}/bin/pip install -q wheel",
+            f"./{venv}/bin/pip install -q -r requirements.txt",
             (
                 f"./{venv}/bin/python deploy.py {self.region} "
                 f"{self.instance} {self.instance} cicd"
@@ -78,8 +148,8 @@ class Deployer:
         endpoint = f"https://{self.instance}.azurewebsites.net"
         commands = [
             f"python -mvenv {venv}",
-            f"./{venv}/bin/pip install wheel",
-            f"./{venv}/bin/pip install sdk/*.whl",
+            f"./{venv}/bin/pip install -q wheel",
+            f"./{venv}/bin/pip install -q sdk/*.whl",
             (
                 f"./{venv}/bin/python {script} test {inputs} "
                 f"--region {self.region} --endpoint {endpoint}"
@@ -89,30 +159,44 @@ class Deployer:
             subprocess.check_call(cmd, shell=True)
 
     def cleanup(self) -> None:
-        subprocess.check_call(["az", "group", "delete", "-n", self.instance, "--yes"])
+        subprocess.call(["az", "group", "delete", "-n", self.instance, "--yes"])
 
     def run(self) -> None:
         dist = "onefuzz.zip"
         self.downloader.get_artifact(
-            "microsoft/onefuzz", "ci.yml", self.branch, "release-artifacts", dist
+            "microsoft/onefuzz",
+            "ci.yml",
+            self.branch,
+            self.pr,
+            "release-artifacts",
+            dist,
         )
         self.deploy(dist)
         self.test()
 
 
 def main() -> None:
+    default_instance = "pr-check-%s" % uuid.uuid4().hex
     parser = argparse.ArgumentParser()
-    parser.add_argument("branch")
-    parser.add_argument("instance")
+    parser.add_argument("--instance", default=default_instance)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--branch")
+    group.add_argument("--pr", type=int)
+
     parser.add_argument("--region", default="eastus2")
     parser.add_argument("--skip_cleanup", action="store_true")
     args = parser.parse_args()
+
+    if not args.branch and not args.pr:
+        raise Exception("--branch or --pr is required")
 
     with tempfile.TemporaryDirectory() as directory:
         os.chdir(directory)
         print(f"running from within {directory}")
 
-        d = Deployer(branch=args.branch, instance=args.instance, region=args.region)
+        d = Deployer(
+            branch=args.branch, pr=args.pr, instance=args.instance, region=args.region
+        )
         try:
             d.run()
         finally:
