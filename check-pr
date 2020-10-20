@@ -62,6 +62,23 @@ class Downloader:
     def __init__(self):
         self.gh = Github(login_or_token=os.environ["GITHUB_ISSUE_TOKEN"])
 
+    def update_pr(self, repo_name: str, pr: int) -> None:
+        pr_obj = self.gh.get_repo(repo_name).get_pull(pr)
+        if pr_obj.mergeable_state == "behind":
+            print(f"pr:{pr} out of date.  Updating")
+            pr_obj.update_branch()
+            time.sleep(5)
+        elif pr_obj.mergeable_state == "dirty":
+            raise Exception(f"merge confict errors on pr:{pr}")
+
+    def merge_pr(self, repo_name: str, pr: int) -> None:
+        pr_obj = self.gh.get_repo(repo_name).get_pull(pr)
+        if pr_obj.mergeable_state == "clean":
+            print(f"merging pr:{pr}")
+            pr_obj.merge(commit_message="", merge_method="squash")
+        else:
+            print(f"unable to merge pr:{pr}", pr_obj.mergeable_state)
+
     def get_artifact(
         self,
         repo_name: str,
@@ -74,6 +91,7 @@ class Downloader:
         print(f"getting {name}")
 
         if pr:
+            self.update_pr(repo_name, pr)
             branch = self.gh.get_repo(repo_name).get_pull(pr).head.ref
         if not branch:
             raise Exception("missing branch")
@@ -123,22 +141,30 @@ class Deployer:
         self.instance = instance
         self.region = region
 
+    def merge(self) -> None:
+        if self.pr:
+            self.downloader.merge_pr(self.branch, self.pr)
+
     def deploy(self, filename: str) -> None:
         print(f"deploying {filename} to {self.instance}")
 
         venv = "deploy-venv"
         commands = [
-            f"unzip -q {filename}",
-            "unzip onefuzz-deployment*.zip",
-            f"python -mvenv {venv}",
-            f"./{venv}/bin/pip install -q wheel",
-            f"./{venv}/bin/pip install -q -r requirements.txt",
+            ("extracting release-artifacts", f"unzip -qq {filename}"),
+            ("extracting deployment", "unzip -qq onefuzz-deployment*.zip"),
+            ("setup venv", f"python -mvenv {venv}"),
+            ("installing wheel", f"./{venv}/bin/pip install -q wheel"),
+            ("installing prereqs", f"./{venv}/bin/pip install -q -r requirements.txt"),
             (
-                f"./{venv}/bin/python deploy.py {self.region} "
-                f"{self.instance} {self.instance} cicd"
+                "running deployment",
+                (
+                    f"./{venv}/bin/python deploy.py {self.region} "
+                    f"{self.instance} {self.instance} cicd"
+                ),
             ),
         ]
-        for cmd in commands:
+        for (msg, cmd) in commands:
+            print(msg)
             subprocess.check_call(cmd, shell=True)
 
     def test(self) -> None:
@@ -147,15 +173,19 @@ class Deployer:
         inputs = "/home/bcaswell/projects/onefuzz/built-samples/"
         endpoint = f"https://{self.instance}.azurewebsites.net"
         commands = [
-            f"python -mvenv {venv}",
-            f"./{venv}/bin/pip install -q wheel",
-            f"./{venv}/bin/pip install -q sdk/*.whl",
+            ("test venv", f"python -mvenv {venv}"),
+            ("installing wheel", f"./{venv}/bin/pip install -q wheel"),
+            ("installing sdk", f"./{venv}/bin/pip install -q sdk/*.whl"),
             (
-                f"./{venv}/bin/python {script} test {inputs} "
-                f"--region {self.region} --endpoint {endpoint}"
+                "running integration",
+                (
+                    f"./{venv}/bin/python {script} test {inputs} "
+                    f"--region {self.region} --endpoint {endpoint}"
+                ),
             ),
         ]
-        for cmd in commands:
+        for (msg, cmd) in commands:
+            print(msg)
             subprocess.check_call(cmd, shell=True)
 
     def cleanup(self) -> None:
@@ -184,7 +214,8 @@ def main() -> None:
     group.add_argument("--pr", type=int)
 
     parser.add_argument("--region", default="eastus2")
-    parser.add_argument("--skip_cleanup", action="store_true")
+    parser.add_argument("--skip-cleanup", action="store_true")
+    parser.add_argument("--merge-on-success", action="store_true")
     args = parser.parse_args()
 
     if not args.branch and not args.pr:
@@ -199,6 +230,8 @@ def main() -> None:
         )
         try:
             d.run()
+            if parser.merge_on_success:
+                d.merge()
         finally:
             if not args.skip_cleanup:
                 d.cleanup()
