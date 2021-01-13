@@ -1,0 +1,25 @@
+#!/usr/bin/env python
+
+import os
+from typing import Optional, Callable, Tuple, TypeVar
+
+from github import Github
+
+
+def main() -> None:
+    gh = Github(login_or_token=os.environ["GITHUB_ISSUE_TOKEN"])
+    for pr in gh.get_repo("microsoft/onefuzz").get_pulls():
+        if 'auto-merge' not in [x.name for x in pr.labels]:
+            print(f"not auto-merge {pr}")
+            continue
+        
+        if pr.mergeable_state != 'behind':
+            print(f"not behind {pr}")
+            continue
+
+        print(f"updating {pr}")
+        pr.update_branch()
+
+
+if __name__ == "__main__":
+    main()
