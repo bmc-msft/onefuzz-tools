@@ -6,7 +6,9 @@ set -e
 cd $ONEFUZZ_SRC_ROOT/src/api-service/
 eval $(direnv export bash)
 black ./__app__ ./tests
+(cd __app__; ../../ci/disable-py-cache.sh)
 mypy __app__ tests
+(cd __app__; ../../ci/enable-py-cache.sh)
 flake8 __app__ tests
 isort --profile black __app__ tests
 
@@ -14,7 +16,9 @@ cd $ONEFUZZ_SRC_ROOT/src/cli
 eval $(direnv export bash)
 black ./onefuzz ./tests ./examples
 isort --profile black onefuzz tests examples
+(cd onefuzz; ../../ci/disable-py-cache.sh)
 mypy onefuzz tests examples
+(cd onefuzz; ../../ci/enable-py-cache.sh)
 flake8 onefuzz tests examples
 
 cd $ONEFUZZ_SRC_ROOT/src/pytypes
@@ -23,3 +27,24 @@ black ./onefuzztypes
 isort --profile black onefuzztypes
 mypy onefuzztypes
 flake8 onefuzztypes
+
+cd $ONEFUZZ_SRC_ROOT/src/deployment
+eval $(direnv export bash)
+black *.py
+isort --profile black *.py
+mypy *.py
+flake8 *.py
+
+#cd $ONEFUZZ_SRC_ROOT/src/integration-tests
+#eval $(direnv export bash)
+#black *.py
+#isort --profile black *.py
+#mypy *.py
+#flake8 *.py
+
+#cd $ONEFUZZ_SRC_ROOT/src/utils/ado-testing/
+#eval $(direnv export bash)
+#black *.py
+#isort --profile black *.py
+#mypy *.py
+#flake8 *.py

@@ -124,7 +124,7 @@ class Downloader:
         wait(check, frequency=10.0)
 
         if run.conclusion != "success":
-            raise Exception("bad conclusion: %s" % run.conclusionq)
+            raise Exception(f"bad conclusion: {run.conclusion}")
 
         response = requests.get(run.artifacts_url).json()
         for artifact in response["artifacts"]:
@@ -147,7 +147,6 @@ class Deployer:
 
     def deploy(self, filename: str) -> None:
         print(f"deploying {filename} to {self.instance}")
-
         venv = "deploy-venv"
         commands = [
             ("extracting release-artifacts", f"unzip -qq {filename}"),
@@ -167,19 +166,24 @@ class Deployer:
             print(msg)
             subprocess.check_call(cmd, shell=True)
 
-    def test(self) -> None:
+    def test(self, filename: str) -> None:
         venv = "test-venv"
-        script = "~/projects/onefuzz/onefuzz/src/cli/examples/integration-test.py"
-        inputs = "/home/bcaswell/projects/onefuzz/built-samples/"
+        test_dir = "integration-test-artifacts"
+        script = "integration-test.py"
         endpoint = f"https://{self.instance}.azurewebsites.net"
         commands = [
+            (
+                "extracting integration-test-artifacts",
+                f"unzip -qq {filename} -d {test_dir}",
+            ),
             ("test venv", f"python -mvenv {venv}"),
             ("installing wheel", f"./{venv}/bin/pip install -q wheel"),
             ("installing sdk", f"./{venv}/bin/pip install -q sdk/*.whl"),
+            ("install azure-cli-core", f"./{venv}/bin/pip install -q azure-cli-core"),
             (
                 "running integration",
                 (
-                    f"./{venv}/bin/python {script} test {inputs} "
+                    f"./{venv}/bin/python {test_dir}/{script} test {test_dir} "
                     f"--region {self.region} --endpoint {endpoint}"
                 ),
             ),
@@ -188,21 +192,68 @@ class Deployer:
             print(msg)
             subprocess.check_call(cmd, shell=True)
 
-    def cleanup(self) -> None:
-        subprocess.call(["az", "group", "delete", "-n", self.instance, "--yes"])
+        app_id = (
+            subprocess.check_output(
+                f"az monitor app-insights component show -a {self.instance} -g {self.instance}"
+                " --query appId --output tsv",
+                shell=True,
+            )
+            .decode()
+            .strip()
+        )
 
-    def run(self) -> None:
-        dist = "onefuzz.zip"
+        queries = [
+            "exceptions | count",
+            'union traces | where message startswith "request error" | count',
+            'union traces | where message startswith "error running" | count',
+        ]
+
+        for query in queries:
+            count = (
+                subprocess.check_output(
+                    f"az monitor app-insights query --app {app_id} --analytics-query "
+                    f"'{query}'  --offset 1h --query tables[0].rows[0] --output tsv"
+                )
+                .decode()
+                .strip()
+            )
+
+            if count != "0":
+                raise Exception(f"exceptions raised during testing {count}")
+
+    def cleanup(self, skip: bool) -> None:
+        if skip:
+            return
+
+        subprocess.call(
+            ["az", "group", "delete", "-n", self.instance, "--yes", "--no-wait"]
+        )
+
+    def run(self, *, merge_on_success=False) -> None:
+        filename = "release-artifacts.zip"
         self.downloader.get_artifact(
             "microsoft/onefuzz",
             "ci.yml",
             self.branch,
             self.pr,
             "release-artifacts",
-            dist,
+            filename,
         )
-        self.deploy(dist)
-        self.test()
+        self.deploy(filename)
+
+        filename = "integration-test-artifacts.zip"
+        self.downloader.get_artifact(
+            "microsoft/onefuzz",
+            "ci.yml",
+            self.branch,
+            self.pr,
+            "integration-test-artifacts",
+            filename,
+        )
+        self.test(filename)
+
+        if merge_on_success:
+            self.merge()
 
 
 def main() -> None:
@@ -215,26 +266,27 @@ def main() -> None:
 
     parser.add_argument("--region", default="eastus2")
     parser.add_argument("--skip-cleanup", action="store_true")
+    parser.add_argument("--skip-cleanup-on-failure", action="store_true")
     parser.add_argument("--merge-on-success", action="store_true")
     args = parser.parse_args()
 
     if not args.branch and not args.pr:
         raise Exception("--branch or --pr is required")
 
+    d = Deployer(
+        branch=args.branch, pr=args.pr, instance=args.instance, region=args.region
+    )
     with tempfile.TemporaryDirectory() as directory:
         os.chdir(directory)
         print(f"running from within {directory}")
 
-        d = Deployer(
-            branch=args.branch, pr=args.pr, instance=args.instance, region=args.region
-        )
         try:
-            d.run()
-            if parser.merge_on_success:
-                d.merge()
+            d.run(merge_on_success=args.merge_on_success)
+            d.cleanup(args.skip_cleanup)
+            return
         finally:
-            if not args.skip_cleanup:
-                d.cleanup()
+            if not args.skip_cleanup_on_failure:
+                d.cleanup(args.skip_cleanup)
 
 
 if __name__ == "__main__":
