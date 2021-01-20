@@ -122,7 +122,6 @@ class Downloader:
             return run.status == "completed", run.status, None
 
         wait(check, frequency=10.0)
-
         if run.conclusion != "success":
             raise Exception(f"bad conclusion: {run.conclusion}")
 
@@ -158,7 +157,7 @@ class Deployer:
     def deploy(self, filename: str) -> None:
         print(f"deploying {filename} to {self.instance}")
         venv = "deploy-venv"
-        subprocess.check_call(f"python -mvenv {venv}")
+        subprocess.check_call(f"python -mvenv {venv}", shell=True)
         pip = venv_path(venv, "pip")
         py = venv_path(venv, "python")
         commands = [
@@ -177,11 +176,10 @@ class Deployer:
         for (msg, cmd) in commands:
             print(msg)
             subprocess.check_call(cmd, shell=True)
-            return
 
     def test(self, filename: str) -> None:
         venv = "test-venv"
-        subprocess.check_call(f"python -mvenv {venv}")
+        subprocess.check_call(f"python -mvenv {venv}", shell=True)
         pip = venv_path(venv, "pip")
         py = venv_path(venv, "python")
         test_dir = "integration-test-artifacts"
@@ -228,7 +226,8 @@ class Deployer:
             count = (
                 subprocess.check_output(
                     f"az monitor app-insights query --app {app_id} --analytics-query "
-                    f"'{query}'  --offset 1h --query tables[0].rows[0] --output tsv"
+                    f"'{query}'  --offset 1h --query tables[0].rows[0] --output tsv",
+                    shell=True,
                 )
                 .decode()
                 .strip()
@@ -243,7 +242,8 @@ class Deployer:
             return
 
         subprocess.call(
-            ["az", "group", "delete", "-n", self.instance, "--yes", "--no-wait"]
+            ["az", "group", "delete", "-n", self.instance, "--yes", "--no-wait"],
+            shell=True,
         )
 
     def run(self, *, merge_on_success=False) -> None:
