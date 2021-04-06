@@ -30,6 +30,7 @@ class Deployer:
 
     def get_artifact_url(self, branch, name) -> str:
         for run in self.ci.get_runs(branch=branch, status="completed"):
+            print(run)
             response = requests.get(run.artifacts_url).json()
             for artifact in response["artifacts"]:
                 if artifact["name"] == name:

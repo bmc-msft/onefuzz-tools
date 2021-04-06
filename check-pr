@@ -1,17 +1,16 @@
 #!/usr/bin/env python
 
 import argparse
-import sys
-import subprocess
-import tempfile
 import os
+import subprocess
+import sys
+import tempfile
 import time
 import uuid
-from typing import Optional, Callable, Tuple, TypeVar
+from typing import Callable, Optional, Tuple, TypeVar
 
 import requests
 from github import Github
-
 
 A = TypeVar("A")
 
@@ -115,7 +114,14 @@ class Downloader:
     ) -> str:
         repo = self.gh.get_repo(repo_name)
         workflow = repo.get_workflow(workflow_name)
-        run = workflow.get_runs(branch=branch)[0]
+        runs = workflow.get_runs()
+        run = None
+        for x in runs:
+            if x.head_branch != branch:
+                continue
+            run = x
+            break
+        print("using run from branch", run.head_branch)
 
         def check():
             run.update()
@@ -134,12 +140,21 @@ class Downloader:
 
 
 class Deployer:
-    def __init__(self, *, pr: int, branch: str, instance: str, region: str):
+    def __init__(
+        self,
+        *,
+        pr: int,
+        branch: str,
+        instance: str,
+        region: str,
+        subscription_id: Optional[str],
+    ):
         self.downloader = Downloader()
         self.pr = pr
         self.branch = branch
         self.instance = instance
         self.region = region
+        self.subscription_id = subscription_id
 
     def merge(self) -> None:
         if self.pr:
@@ -159,6 +174,7 @@ class Deployer:
                 (
                     f"./{venv}/bin/python deploy.py {self.region} "
                     f"{self.instance} {self.instance} cicd"
+                    f" {' --subscription_id ' + self.subscription_id if self.subscription_id else ''}"
                 ),
             ),
         ]
@@ -179,7 +195,6 @@ class Deployer:
             ("test venv", f"python -mvenv {venv}"),
             ("installing wheel", f"./{venv}/bin/pip install -q wheel"),
             ("installing sdk", f"./{venv}/bin/pip install -q sdk/*.whl"),
-            ("install azure-cli-core", f"./{venv}/bin/pip install -q azure-cli-core"),
             (
                 "running integration",
                 (
@@ -191,35 +206,6 @@ class Deployer:
         for (msg, cmd) in commands:
             print(msg)
             subprocess.check_call(cmd, shell=True)
-
-        app_id = (
-            subprocess.check_output(
-                f"az monitor app-insights component show -a {self.instance} -g {self.instance}"
-                " --query appId --output tsv",
-                shell=True,
-            )
-            .decode()
-            .strip()
-        )
-
-        queries = [
-            "exceptions | count",
-            'union traces | where message startswith "request error" | count',
-            'union traces | where message startswith "error running" | count',
-        ]
-
-        for query in queries:
-            count = (
-                subprocess.check_output(
-                    f"az monitor app-insights query --app {app_id} --analytics-query "
-                    f"'{query}'  --offset 1h --query tables[0].rows[0] --output tsv"
-                )
-                .decode()
-                .strip()
-            )
-
-            if count != "0":
-                raise Exception(f"exceptions raised during testing {count}")
 
     def cleanup(self, skip: bool) -> None:
         if skip:
@@ -239,8 +225,6 @@ class Deployer:
             "release-artifacts",
             filename,
         )
-        self.deploy(filename)
-
         filename = "integration-test-artifacts.zip"
         self.downloader.get_artifact(
             "microsoft/onefuzz",
@@ -250,6 +234,8 @@ class Deployer:
             "integration-test-artifacts",
             filename,
         )
+
+        self.deploy(filename)
         self.test(filename)
 
         if merge_on_success:
@@ -268,13 +254,18 @@ def main() -> None:
     parser.add_argument("--skip-cleanup", action="store_true")
     parser.add_argument("--skip-cleanup-on-failure", action="store_true")
     parser.add_argument("--merge-on-success", action="store_true")
+    parser.add_argument("--subscription_id")
     args = parser.parse_args()
 
     if not args.branch and not args.pr:
         raise Exception("--branch or --pr is required")
 
     d = Deployer(
-        branch=args.branch, pr=args.pr, instance=args.instance, region=args.region
+        branch=args.branch,
+        pr=args.pr,
+        instance=args.instance,
+        region=args.region,
+        subscription_id=args.subscription_id,
     )
     with tempfile.TemporaryDirectory() as directory:
         os.chdir(directory)
