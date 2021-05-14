@@ -148,6 +148,7 @@ class Deployer:
         instance: str,
         region: str,
         subscription_id: Optional[str],
+        skip_tests: bool,
     ):
         self.downloader = Downloader()
         self.pr = pr
@@ -155,6 +156,7 @@ class Deployer:
         self.instance = instance
         self.region = region
         self.subscription_id = subscription_id
+        self.skip_tests = skip_tests
 
     def merge(self) -> None:
         if self.pr:
@@ -216,27 +218,29 @@ class Deployer:
         )
 
     def run(self, *, merge_on_success=False) -> None:
-        filename = "release-artifacts.zip"
+        release_filename = "release-artifacts.zip"
         self.downloader.get_artifact(
             "microsoft/onefuzz",
             "ci.yml",
             self.branch,
             self.pr,
             "release-artifacts",
-            filename,
+            release_filename,
         )
-        filename = "integration-test-artifacts.zip"
+
+        test_filename = "integration-test-artifacts.zip"
         self.downloader.get_artifact(
             "microsoft/onefuzz",
             "ci.yml",
             self.branch,
             self.pr,
             "integration-test-artifacts",
-            filename,
+            test_filename,
         )
 
-        self.deploy(filename)
-        self.test(filename)
+        self.deploy(release_filename)
+        if not self.skip_tests:
+            self.test(test_filename)
 
         if merge_on_success:
             self.merge()
@@ -251,6 +255,7 @@ def main() -> None:
     group.add_argument("--pr", type=int)
 
     parser.add_argument("--region", default="eastus2")
+    parser.add_argument("--skip-tests", action="store_true")
     parser.add_argument("--skip-cleanup", action="store_true")
     parser.add_argument("--skip-cleanup-on-failure", action="store_true")
     parser.add_argument("--merge-on-success", action="store_true")
@@ -266,6 +271,7 @@ def main() -> None:
         instance=args.instance,
         region=args.region,
         subscription_id=args.subscription_id,
+        skip_tests=args.skip_tests,
     )
     with tempfile.TemporaryDirectory() as directory:
         os.chdir(directory)
