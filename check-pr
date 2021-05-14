@@ -128,7 +128,6 @@ class Downloader:
             return run.status == "completed", run.status, None
 
         wait(check, frequency=10.0)
-
         if run.conclusion != "success":
             raise Exception(f"bad conclusion: {run.conclusion}")
 
@@ -137,6 +136,16 @@ class Downloader:
             if artifact["name"] == name:
                 return artifact["archive_download_url"]
         raise Exception(f"no archive url for {branch} - {name}")
+
+
+def venv_path(base: str, name: str) -> str:
+    for subdir in ["bin", "Scripts"]:
+        path = os.path.join(base, subdir, name)
+        for ext in ["", ".exe"]:
+            path += ext
+            if os.path.exists(path):
+                return path
+    raise Exception("missing venv")
 
 
 class Deployer:
@@ -165,16 +174,18 @@ class Deployer:
     def deploy(self, filename: str) -> None:
         print(f"deploying {filename} to {self.instance}")
         venv = "deploy-venv"
+        subprocess.check_call(f"python -mvenv {venv}", shell=True)
+        pip = venv_path(venv, "pip")
+        py = venv_path(venv, "python")
         commands = [
             ("extracting release-artifacts", f"unzip -qq {filename}"),
             ("extracting deployment", "unzip -qq onefuzz-deployment*.zip"),
-            ("setup venv", f"python -mvenv {venv}"),
-            ("installing wheel", f"./{venv}/bin/pip install -q wheel"),
-            ("installing prereqs", f"./{venv}/bin/pip install -q -r requirements.txt"),
+            ("installing wheel", f"{pip} install -q wheel"),
+            ("installing prereqs", f"{pip} install -q -r requirements.txt"),
             (
                 "running deployment",
                 (
-                    f"./{venv}/bin/python deploy.py {self.region} "
+                    f"{py} deploy.py {self.region} "
                     f"{self.instance} {self.instance} cicd"
                     f" {' --subscription_id ' + self.subscription_id if self.subscription_id else ''}"
                 ),
@@ -186,9 +197,13 @@ class Deployer:
 
     def test(self, filename: str) -> None:
         venv = "test-venv"
+        subprocess.check_call(f"python -mvenv {venv}", shell=True)
+        pip = venv_path(venv, "pip")
+        py = venv_path(venv, "python")
         test_dir = "integration-test-artifacts"
         script = "integration-test.py"
         endpoint = f"https://{self.instance}.azurewebsites.net"
+        whls = " ".join(glob.glob("sdk/*.whl"))
         commands = [
             (
                 "extracting integration-test-artifacts",
@@ -200,7 +215,7 @@ class Deployer:
             (
                 "running integration",
                 (
-                    f"./{venv}/bin/python {test_dir}/{script} test {test_dir} "
+                    f"{py} {test_dir}/{script} test {test_dir} "
                     f"--region {self.region} --endpoint {endpoint}"
                 ),
             ),
@@ -210,11 +225,13 @@ class Deployer:
             subprocess.check_call(cmd, shell=True)
 
     def cleanup(self, skip: bool) -> None:
+        os.chdir(tempfile.gettempdir())
         if skip:
             return
 
         subprocess.call(
-            ["az", "group", "delete", "-n", self.instance, "--yes", "--no-wait"]
+            ["az", "group", "delete", "-n", self.instance, "--yes", "--no-wait"],
+            shell=True,
         )
 
     def run(self, *, merge_on_success=False) -> None:
@@ -284,6 +301,7 @@ def main() -> None:
         finally:
             if not args.skip_cleanup_on_failure:
                 d.cleanup(args.skip_cleanup)
+        os.chdir(tempfile.gettempdir())
 
 
 if __name__ == "__main__":
